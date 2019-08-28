@@ -12,7 +12,15 @@
         "pretty": true,
         "removeComments": true,
         "declaration": true,
-        "lib": ["es6", "esnext"]
+        "lib": [
+            "es6",
+            "esnext",
+            "esnext.asynciterable"
+        ],
+        "typeRoots": [
+            "./node_modules/@types",
+            "./node_modules/graphql/type"
+        ]
     },
     "exclude": [
         "node_modules",

@@ -6,6 +6,7 @@ import { isAsyncIterable } from 'iterall';
 import { SQSPubSub } from '../sqs-pubsub';
 import SQSChannel from '../channel';
 import { remove } from "lodash"
+import { EventEmitter } from "events";
 
 chai.use(chaiAsPromised);
 const expect = chai.expect;
@@ -17,6 +18,9 @@ function getMockedSQSPubSub({ topic2SubName = undefined, commonMessageHandler = 
   let messages = []
   let id = 0
 
+  // listener.on('message', (msg) => {
+  //   messages.push(msg)
+  // })
 
   let mockSQSChannel = new SQSChannel('test', { client: new AWS.SQS, commonMessageHandler })
 
@@ -41,32 +45,24 @@ function getMockedSQSPubSub({ topic2SubName = undefined, commonMessageHandler = 
     return Promise.resolve()
   })
 
-  const listenerMock = spy(() => Promise.resolve())
-
   const receviceMessageMock = spy(() => {
-    if (messages && !!messages.length) {
-      return Promise.resolve(messages)
-    }
+
     return new Promise((resolve) => {
-      setTimeout(() => resolve([]), 1000)
+      if (messages && !!messages.length) {
+        resolve([messages[0]])
+        return
+      }
+
+      setTimeout(() => {
+        resolve([])
+      }, 50)
     })
   })
 
-  const rawReceviceMessageMock = spy((options = {}, callbacks: Function) => {
-    if (messages && !!messages.length) {
-      callbacks({
-        Messages: messages
-      })
-    }
-  })
-
   const deleteMessageMock = spy((handle) => {
+    // console.log('delete', handle, messages)
     remove(messages, ({ ReceiptHandle }) => ReceiptHandle == handle)
     return Promise.resolve({})
-  })
-
-  const rawDeleteMessageMock = spy((handle) => {
-    remove(messages, ({ ReceiptHandle }) => ReceiptHandle == handle)
   })
 
   const closeMock = spy(() => {
@@ -77,21 +73,16 @@ function getMockedSQSPubSub({ topic2SubName = undefined, commonMessageHandler = 
   mock(mockSQSChannel, 'ensure', ensureMock);
   mock(mockSQSChannel, 'publish', publishMock);
   mock(mockSQSChannel, 'receiveMessage', receviceMessageMock);
-  mock(mockSQSChannel, 'rawReceiveMessage', rawReceviceMessageMock);
-  mock(mockSQSChannel, 'rawDeleteMessage', rawDeleteMessageMock);
-
-  // mock(mockSQSChannel, 'listener', listenerMock)
   mock(mockSQSChannel, 'deleteMessage', deleteMessageMock);
 
-
   const pubSub = new SQSPubSub({ channel: mockSQSChannel })
-  mock(pubSub, 'close', closeMock);
+  // mock(pubSub, 'close', closeMock);
 
   return { pubSub };
 }
 
 // wait for the promise of the message handler
-const asyncMessageHandler = () => new Promise(resolve => setTimeout(resolve, 0));
+const asyncMessageHandler = () => new Promise(resolve => setTimeout(resolve, 100));
 // wait for the promise of the subscribe --> wait for the listener
 const asyncSubscribe = asyncMessageHandler;
 
@@ -131,12 +122,11 @@ describe('AWS SQSPubSub', () => {
           expect((pubSub as any).channel.subscriptionMap[subId]).to.be.an('undefined');
           expect(() => pubSub.unsubscribe(subId)).to.throw(`There is no subscription of id "${subId}"`);
           pubSub.unsubscribe(secondSubId);
-          pubSub.close()
           done();
         } catch (e) {
-          pubSub.close()
           done(e);
         }
+        pubSub.close()
       }
     );
   });
@@ -147,10 +137,8 @@ describe('AWS SQSPubSub', () => {
       .subscribe('Posts', message => {
         try {
           expect(message).to.have.property('comment', 'This is amazing');
-          pubSub.close()
           done();
         } catch (e) {
-          pubSub.close()
           done(e);
         }
       })
@@ -160,9 +148,9 @@ describe('AWS SQSPubSub', () => {
           await asyncMessageHandler();
           pubSub.unsubscribe(subId);
         } catch (e) {
-          pubSub.close()
           done(e);
         }
+        pubSub.close()
       });
   });
 
@@ -200,7 +188,6 @@ describe('AWS SQSPubSub', () => {
           pubSub.close()
           done();
         } catch (e) {
-          pubSub.close()
           done(e);
         }
       })
@@ -209,7 +196,6 @@ describe('AWS SQSPubSub', () => {
           pubSub.publish('Times', { validTime, invalidTime });
           asyncMessageHandler().then(() => pubSub.unsubscribe(subId));
         } catch (e) {
-          pubSub.close()
           done(e);
         }
       });
@@ -217,8 +203,8 @@ describe('AWS SQSPubSub', () => {
 
   it('throws if you try to unsubscribe with an unknown id', () => {
     const { pubSub } = getMockedSQSPubSub();
-    return expect(() => pubSub.unsubscribe(123)).to.throw('There is no subscription of id "123"');
     pubSub.close()
+    return expect(() => pubSub.unsubscribe(123)).to.throw('There is no subscription of id "123"');
   });
 
   it('can use a transform function to convert the topic name given into more explicit subscription name', done => {
@@ -228,10 +214,8 @@ describe('AWS SQSPubSub', () => {
     const validateMessage = message => {
       try {
         expect(message.toString()).to.equals('test');
-        pubSub.close()
         done();
       } catch (e) {
-        pubSub.close()
         done(e);
       }
     };
@@ -242,6 +226,7 @@ describe('AWS SQSPubSub', () => {
         pubSub.publish('comments', 'test');
         await asyncMessageHandler();
         pubSub.unsubscribe(subId);
+        pubSub.close()
       });
   });
 });
@@ -251,11 +236,12 @@ describe('PubSubAsyncIterator', () => {
     const { pubSub } = getMockedSQSPubSub();
     const eventName = 'test';
     const iterator = pubSub.asyncIterator(eventName);
-    // pubSub.close()
     // tslint:disable-next-line:no-unused-expression
     expect(iterator).to.exist;
     // tslint:disable-next-line:no-unused-expression
     expect(isAsyncIterable(iterator)).to.be.true;
+
+    asyncMessageHandler().then(() => pubSub.close())
     done()
   });
 
@@ -265,16 +251,15 @@ describe('PubSubAsyncIterator', () => {
     const iterator = pubSub.asyncIterator(eventName);
 
     iterator.next().then(result => {
-      // console.log(result)
       // tslint:disable-next-line:no-unused-expression
-      // expect(result).to.exist;
+      expect(result).to.exist;
       // tslint:disable-next-line:no-unused-expression
-      // expect(result.value).to.exist;
+      expect(result.value).to.exist;
       // tslint:disable-next-line:no-unused-expression
-      // expect(result.done).to.exist;
-      pubSub.close()
+      expect(result.done).to.exist;
 
       done();
+      pubSub.close()
     });
     // Todo: check if the needed timeout here could be an issue
     // Todo: related? https://github.com/davidyaha/graphql-redis-subscriptions/issues/90
@@ -283,69 +268,70 @@ describe('PubSubAsyncIterator', () => {
     asyncSubscribe().then(() => pubSub.publish(eventName, { test: true }));
   });
 
-  //   it('should not trigger event on asyncIterator when publishing other event', () => {
-  //     const { pubSub } = getMockedSQSPubSub();
-  //     const eventName = 'test2';
-  //     const iterator = pubSub.asyncIterator('test');
-  //     const triggerSpy = spy(() => undefined);
+  it('should not trigger event on asyncIterator when publishing other event', (done) => {
+    const { pubSub } = getMockedSQSPubSub();
+    const eventName = 'test2';
+    const iterator = pubSub.asyncIterator('test');
+    const triggerSpy = spy(() => undefined);
 
-  //     iterator.next().then(triggerSpy);
-  //     pubSub.publish(eventName, { test: true });
-  //     expect(triggerSpy.callCount).to.equal(0);
-  //     pubSub.close()
-  //   });
+    iterator.next().then(triggerSpy);
+    pubSub.publish(eventName, { test: true });
+    expect(triggerSpy.callCount).to.equal(0);
+    asyncMessageHandler().then(() => pubSub.close())
+    done()
+  });
 
-  //   it('register to multiple events', done => {
-  //     const { pubSub } = getMockedSQSPubSub();
-  //     const eventName = 'test2';
-  //     const iterator = pubSub.asyncIterator(['test', 'test2']);
-  //     const triggerSpy = spy(() => undefined);
+  it('register to multiple events', done => {
+    const { pubSub } = getMockedSQSPubSub();
+    const eventName = 'test2';
+    const iterator = pubSub.asyncIterator(['test', 'test2']);
+    const triggerSpy = spy(() => undefined);
 
-  //     iterator.next().then(() => {
-  //       triggerSpy();
-  //       expect(triggerSpy.callCount).to.be.gte(1);
-  //       pubSub.close()
-  //       done();
-  //     });
-  //     // Todo: check if the needed timeout here could be an issue
-  //     // Todo: related? https://github.com/davidyaha/graphql-redis-subscriptions/issues/90
-  //     // the subscriber needs some time to subscribe
-  //     asyncSubscribe().then(() => pubSub.publish(eventName, { test: true }));
-  //   });
+    iterator.next().then(() => {
+      triggerSpy();
+      expect(triggerSpy.callCount).to.be.gte(1);
+      pubSub.close()
+      done();
+    });
+    // Todo: check if the needed timeout here could be an issue
+    // Todo: related? https://github.com/davidyaha/graphql-redis-subscriptions/issues/90
+    // the subscriber needs some time to subscribe
+    asyncSubscribe().then(() => pubSub.publish(eventName, { test: true }));
+  });
 
-  //   it('should not trigger event on asyncIterator already returned', done => {
-  //     const { pubSub } = getMockedSQSPubSub();
-  //     const eventName = 'test';
-  //     const iterator = pubSub.asyncIterator<{ data: Buffer }>(eventName);
+  it('should not trigger event on asyncIterator already returned', done => {
+    const { pubSub } = getMockedSQSPubSub();
+    const eventName = 'test';
+    const iterator = pubSub.asyncIterator<{ data: Buffer }>(eventName);
 
-  //     iterator
-  //       .next()
-  //       .then(result => {
-  //         // tslint:disable-next-line:no-unused-expression
-  //         expect(result).to.exist;
-  //         // tslint:disable-next-line:no-unused-expression
-  //         expect(result.value).to.exist;
-  //         expect(JSON.parse(result.value.data.toString()).test).to.equal('word');
-  //         // tslint:disable-next-line:no-unused-expression
-  //         expect(result.done).to.be.false;
-  //       })
-  //       .then(() =>
-  //         iterator.next().then(result => {
-  //           // tslint:disable-next-line:no-unused-expression
-  //           expect(result).to.exist;
-  //           // tslint:disable-next-line:no-unused-expression
-  //           expect(result.value).not.to.exist;
-  //           // tslint:disable-next-line:no-unused-expression
-  //           expect(result.done).to.be.true;
-  //           pubSub.close()
-  //           done();
-  //         })
-  //       );
+    iterator
+      .next()
+      .then(result => {
+        // tslint:disable-next-line:no-unused-expression
+        expect(result).to.exist;
+        // tslint:disable-next-line:no-unused-expression
+        expect(result.value).to.exist;
+        expect((result.value as any).test).to.equal('word');
+        // tslint:disable-next-line:no-unused-expression
+        expect(result.done).to.be.false;
+      })
+      .then(() =>
+        iterator.next().then(result => {
+          // tslint:disable-next-line:no-unused-expression
+          expect(result).to.exist;
+          // tslint:disable-next-line:no-unused-expression
+          expect(result.value).not.to.exist;
+          // tslint:disable-next-line:no-unused-expression
+          expect(result.done).to.be.true;
+          pubSub.close()
+          done();
+        })
+      );
 
-  //     asyncSubscribe()
-  //       .then(() => pubSub.publish(eventName, { test: 'word' }))
-  //       .then(asyncMessageHandler)
-  //       .then(() => iterator.return())
-  //       .then(() => pubSub.publish(eventName, { test: true }));
-  //   });
+    asyncSubscribe()
+      .then(() => pubSub.publish(eventName, { test: 'word' }))
+      .then(asyncMessageHandler)
+      .then(() => iterator.return())
+      .then(() => pubSub.publish(eventName, { test: true }));
+  });
 });

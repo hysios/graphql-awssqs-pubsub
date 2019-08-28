@@ -20,7 +20,6 @@
     "compile": "tsc",
     "pretest": "npm run compile",
     "test": "npm run testonly -- && npm run integration --",
-    "posttest": "npm run lint",
     "lint": "tslint --project ./tsconfig.json ./src/**/*.ts",
     "watch": "tsc -w",
     "testonly": "mocha --reporter spec --full-trace ./dist/test/tests.js ",

@@ -54,6 +54,8 @@ class SQSChannel extends EventEmitter {
         }
 
         this.commonMessageHandler = commonMessageHandler
+        // this.on("message", this.onMessage.bind(this))
+        // this.on("messages", this.onMessages.bind(this))
     }
 
     private ensure(): Promise<this> {
@@ -85,13 +87,39 @@ class SQSChannel extends EventEmitter {
         let { pattern } = options
         return new Promise((resolve, reject) => {
             this.ensure().then(() => {
-                this.listener2()
+                this.listener()
                 const id = pattern ? this.pushMatch(topic, OnMessage) : this.pushRef(topic, OnMessage)
-                console.log('subscribe', id)
                 resolve(id)
             }).catch(reject)
         })
     }
+
+    listener() {
+        if (this.running) {
+            return
+        }
+
+        this.running = true
+
+        setImmediate(async () => {
+            // resolve()
+            while (this.running) {
+                let msgs = await this.receiveMessage();
+
+                if (msgs && msgs.length > 0) {
+                    for (let msg of msgs) {
+                        let { MessageAttributes, Body } = msg,
+                            topic = MessageAttributes["Topic"] ? MessageAttributes["Topic"].StringValue : undefined;
+
+                        // this.emit('message', topic, this.commonMessageHandler(JSON.parse(Body)))
+                        this.onMessage(topic, this.commonMessageHandler(JSON.parse(Body)))
+                        await this.deleteMessage(msg.ReceiptHandle)
+                    }
+                }
+            }
+        })
+    }
+
 
     private deleteRef(topicId: number) {
         if (!this.subscriptionMap[topicId]) {
@@ -218,6 +246,7 @@ class SQSChannel extends EventEmitter {
                 if (err) {
                     reject(err)
                 } else if (data.Messages) {
+                    this.emit('messages', data.Messages)
                     resolve(data.Messages)
                 }
             });
@@ -242,112 +271,6 @@ class SQSChannel extends EventEmitter {
     }
 
     private running = false
-
-    waitMessageUtil(duration: number): Promise<AWS.SQS.MessageList> {
-        return new Promise((resolve) => {
-            this.receiveMessage({ waitSeconds: duration }).then(resolve)
-        })
-    }
-
-    listener() {
-        if (this.running) {
-            return Promise.resolve()
-        }
-
-        this.running = true
-
-        setImmediate(async () => {
-
-            // while (this.running) {
-            let msgs = await this.receiveMessage();
-
-            if (msgs && msgs.length > 0) {
-                for (let msg of msgs) {
-                    let { MessageAttributes, Body } = msg,
-                        topic = MessageAttributes["Topic"] ? MessageAttributes["Topic"].StringValue : undefined;
-
-                    this.onMessage(topic, this.commonMessageHandler(JSON.parse(Body)))
-                    await this.deleteMessage(msg.ReceiptHandle)
-                }
-            }
-            this.running = false
-            // }
-        })
-        // return Promise.resolve()
-    }
-
-    private listener2(): Promise<void> {
-        if (this.running) {
-            return Promise.resolve()
-        }
-
-        this.running = true
-
-        this.loopMessage()
-    }
-
-    loopMessage(options = { waitSeconds: 0 }) {
-        const processMessages = (msgs) => {
-            (msgs || []).forEach(this.processMsg.bind(this))
-        }
-
-        this.rawReceiveMessage(options, (data) => {
-            processMessages(data.Messages)
-            this.loopMessage(options)
-        })
-    }
-
-    rawReceiveMessage(options = { waitSeconds: 0 }, callbacks: Function) {
-        options = Object.assign({}, this.options, options)
-
-        let params: AWS.SQS.ReceiveMessageRequest = {
-            AttributeNames: [
-                "SentTimestamp",
-                "Topic",
-                "BodyType",
-            ],
-            MaxNumberOfMessages: 10,
-            MessageAttributeNames: [
-                "All"
-            ],
-            QueueUrl: this.queueUrl,
-            VisibilityTimeout: 20,
-            WaitTimeSeconds: options.waitSeconds
-        };
-
-        this.client.receiveMessage(params, (err, data) => {
-            if (err) {
-                console.error(err)
-                this.running = false
-                return
-            } else if (data.Messages) {
-                callbacks(data)
-                // processMessages(data.Messages)
-                // this.loopMessage(options)
-            }
-        });
-    }
-
-    rawDeleteMessage(handle) {
-        let deleteParams = {
-            QueueUrl: this.queueUrl,
-            ReceiptHandle: handle
-        };
-
-        this.client.deleteMessage(deleteParams, (err, data) => {
-            if (err) {
-                console.error(err)
-            }
-        });
-    }
-
-    processMsg(msg) {
-        let { MessageAttributes, Body } = msg,
-            topic = MessageAttributes["Topic"] ? MessageAttributes["Topic"].StringValue : undefined;
-
-        this.onMessage(topic, this.commonMessageHandler(JSON.parse(Body)))
-        this.rawDeleteMessage(msg.ReceiptHandle)
-    }
 
     private onMessage(topic: string | undefined, msg: any) {
         this.matchRef(topic)(msg)
