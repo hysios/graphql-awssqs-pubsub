@@ -27,7 +27,7 @@
     "integration": "mocha --reporter spec --full-trace ./dist/test/integration-tests.js"
   },
   "dependencies": {
-    "aws-sdk": "^2.518.0",
+    "aws-sdk": "^2.814.0",
     "graphql-subscriptions": "^1.1.0",
     "iterall": "^1.2.2",
     "minimatch": "^3.0.4"
